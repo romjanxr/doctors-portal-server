@@ -2,12 +2,16 @@ const express = require('express');
 const { MongoClient } = require('mongodb');
 const cors = require('cors');
 const admin = require("firebase-admin");
+const ObjectId = require('mongodb').ObjectId;
 require('dotenv').config()
 const app = express();
 const port = process.env.PORT || 5000;
+const stripe = require('stripe')(process.env.STRIPE_SECRET)
+const fileUpload = require('express-fileupload')
 
 app.use(cors());
 app.use(express.json())
+app.use(fileUpload());
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
 admin.initializeApp({
@@ -40,6 +44,7 @@ async function run() {
         const database = client.db('doctors_portal');
         const appointmentsCollection = database.collection('appointments');
         const userCollection = database.collection('users');
+        const doctorCollection = database.collection('doctors');
 
         // Get API
         app.get('/appointments', verifyToken, async (req, res) => {
@@ -67,12 +72,49 @@ async function run() {
             res.json({ admin: isAdmin })
         })
 
+        app.get('/payments/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: ObjectId(id) }
+            const result = await appointmentsCollection.findOne(query);
+            res.json(result);
+        })
+
         // Post API
         app.post('/appointments', async (req, res) => {
             const appointment = req.body;
             const result = await appointmentsCollection.insertOne(appointment);
             res.json(result);
         });
+
+        app.put('/appointments/:id', async (req, res) => {
+            const id = req.params.id;
+            const payment = req.body;
+            const filter = { _id: ObjectId(id) }
+            const updateDoc = { $set: { payment: payment } };
+            const result = await appointmentsCollection.updateOne(filter, updateDoc);
+            res.json(result)
+        })
+
+        app.get('/doctors', async (req, res) => {
+            const doctors = await doctorCollection.find({}).toArray();
+            res.json(doctors);
+        })
+
+        app.post('/doctors', async (req, res) => {
+            const name = req.body.name;
+            const email = req.body.email;
+            const pic = req.files.image;
+            const picData = pic.data;
+            const encodedPic = picData.toString('base64')
+            const imageBuffer = Buffer.from(encodedPic, 'base64')
+            const doctor = {
+                name,
+                email,
+                image: imageBuffer
+            }
+            const result = await doctorCollection.insertOne(doctor)
+            res.json(result)
+        })
 
         app.post('/users', async (req, res) => {
             const user = req.body;
@@ -104,6 +146,17 @@ async function run() {
             else {
                 res.status(403).json({ message: "You do not have access to make admin" });
             }
+        })
+
+        app.post('/create-payment-intent', async (req, res) => {
+            const paymentInfo = req.body;
+            const amount = paymentInfo.price * 100;
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: 'usd',
+                payment_method_types: ['card']
+            })
+            res.json({ clientSecret: paymentIntent.client_secret });
         })
     }
     finally {
